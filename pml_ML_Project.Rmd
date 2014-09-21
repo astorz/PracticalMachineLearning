@@ -1,0 +1,110 @@
+---
+title: "Machine learning project: building a prediction model to assess the quality of dumbbell lifts"
+author: "Andreas D Storz"
+date: "September 21, 2014"
+output: html_document
+---
+
+## Introduction ##
+*This report details the steps taken to build a prective model in R using the caret package. It is the central compomenent of the course project for the Practical Machine Learning class in Coursera's Data Science Specialization. The substantive goal here is to correctly predict the manner in which volunteers performed dumbbell lifts, and specifically to identify common mistakes. The final model's out-of-sample error rate is estimated to be around 4%.*
+
+## Data and Reproducibility ## 
+
+The data set used here contains measurements from accelerometers that were gathered from study participants performing unilateral dumbbell biceps curls.  The data were collected in order to build a predictive model that can assess how well people performed the specific task given and to (eventually) provide instant feedback. 
+
+Specifically, six volunteers performed ten repetitions of simple dumbbell lifts in five different ways: “exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).” The goal here is to predict the way they performed the task using the measurements on the accelerometers as predictors. 
+
+The original data set can be obtained here: http://groupware.les.inf.puc-rio.br/har. The analysis was conducted in “R Studio”. All calculations are displayed in order to illustrate the actual data analysis process, and to allow for reproducibility. The report itself was created using the ‘knitr’ package while the modeling process made use of the ‘caret’ package. 
+
+## Data preprocessing ##
+
+First, we load the data along with the necessary libraries and look for missing values. 
+
+```{r,cache=TRUE}
+set.seed(3995)
+library(caret); library(ggplot2)
+myData <- read.csv("pml-training.csv")
+dim(myData)
+csNAs <- colSums(is.na(myData))
+length(csNAs[csNAs==19216])
+table(csNAs)
+```
+
+The data set contains a total of 19622 observations on 160 variables, including the outcome variable labeled 'classe'. In theory, any of these variables can be used as predictors, but 67 variables (about 42%) have mostly missing data (19216 out of 19622 rows). Therefore, they are excluded. The other 93 variables have complete observations, but several of them hold categorical data, which likely does not have a high predictive value. Therefore, they are also removed along with variables containing identifying information about the subjects and test intervals. 
+
+```{r}
+indexNAs <- csNAs!=19216
+myDataSub <- myData[,indexNAs]
+myDF <- myDataSub[,-c(1,3:7)]
+colClasses <- sapply(myDF, class)
+indexFactor <- colClasses!="factor"
+indexFactor[c(1,87)] <- TRUE
+myDF <- myDF[,indexFactor]
+```
+
+Finally, a test for near zero variables is performed. It returns a negative result for all the remaining variables, indicating that they are all of potentially predictive value. 
+
+```{r,cache=TRUE}
+nzvs <- nearZeroVar(myDF,saveMetrics=T)
+table(nzvs[,3:4])
+```
+
+This final data sub-set now contains only 54 variables, including the outcome variable. In the next step, I split the data set into a training and a test set on the outcome variable. The model building only happens in the training set while the final model will be evaluated using the test - or validation - set. Around 75% of the observation will be in the training set; the test set contains the remaining 25% of the data.
+
+```{r}
+inTrain <- createDataPartition(y=myDF$classe, p=.75, list=FALSE)
+training <- myDF[inTrain,]
+testing <- myDF[-inTrain,]
+```
+
+
+## Model fitting ## 
+
+The basic choice for model fitting concerns the algorithm to be used. There are a multitude of prediction algorithms to choose from, and for virtually every case there are different, equally valid alternatives available. For the purpose of this project, I selected so-called Stochastic Gradient Boosting or “boosted trees”, as the method of choice. The reason for this is that “boosted trees” is – along with other boosting methods - one of the most accurate and therefore most widely used methods for prediction. In addition to that, it is very versatile as it can be used for both classification and regression.
+
+The basic principle behind boosting is to combine individually weak classifiers in a series of iterations in which the individual learners are weighted, added up, and finally averaged. This weighted and averaged combination of individual classifiers results in a single, much stronger classifier. 
+
+In the case of the “boosted trees” algorithm, these individual classifiers are built with *classification trees*. The algorithm fits a series of trees where each new tree is improving the fit of the model by increasing the overall predictive value. The model’s final prediction is a weighted average of each tree’s prediction where the weights are based on the quality of each tree.
+
+In R, the “boosted trees” algorithm is specified by setting the method to be “gbm”. There are three tuning parameters that need to be defined: the number of boosting iterations, i.e. the number of trees; their depth or number of splits; and the algorithm’s learning rate (or "shrinkage"), i.e. a rate specifying how quickly the algorithm adapts.
+
+For this exploratory modeling demonstration, the default settings were accepted. Under these settings, the “gbm” algorithm fits 50, 100, and finally 150 trees (i.e. boosting iterations) with one, two, and three splits, respectively,  each at a relatively fast learning rate of 0.1. 
+
+By default, each fit is based on bootstrapped resamples. This method tends to underestimate the error. For this reason, I change the resampling method to **cross-validation**, which helps prevent overfitting the model. Specifically, each fit is set to 5 repeats of 10-fild cross-validation. 
+
+The model is built using the 'train' function from the caret package. Given that this is an early, exploratory stage of the model building process and we do not have specific reasons to exclude specific variables, all the remaining ones are considered as preditors and consequently included in the model (indicated by the "." in the formula):
+
+```{r, cache=TRUE}
+ctrl <- trainControl(method="repeatedcv", 
+                     repeats=5)
+modFit <- train(classe~., data=training, 
+                method="gbm", verbose=FALSE, trControl=ctrl)
+```
+
+## Model evaluation ##
+
+The fitted model can easily be evaluated using the following commands:
+
+```{r}
+print(modFit)
+ggplot(modFit)
+```
+
+The output shows that the fit with 150 classification trees having a depth of 3 splits along with a learning rate of 0.1, i.e. a relatively fast learner, was chosen as the final model as it had the highest overall accuracy. This is also evident from the plot displaying the different model fits.
+
+```{r}
+summary(modFit)
+```
+
+The summary output shows the relative influence of the different predictors. This information could be used to fine-tune the model in collaboration with project experts that have more domain-specific knowledge.  
+
+## Predicting on the test set ##
+
+For a final test, this chosen model is applied to the test set data in order to get a measure of the out-of-sample error. The results of these calculations are displayed in a confusion matrix.
+
+```{r, cache=TRUE}
+pmlPred <- predict(modFit, testing)
+confusionMatrix(pmlPred, testing$classe)
+```
+
+The confusion matrix shows the predicted outcomes against the true ones in the test data set. The overall statistics show an impressive accuracy of around 96%. In total, 4717 out of 4904 cases were correctly predicted. More detailed statistics are given for e.g. the sensitivity and specificity by class. This is a strong prediction result given that only a single round of of model fitting was performed without any further fine-tuning and accepting most of the default settings. To reiterate, this model was accurate in about 96% of all cases in the validation set. Since these data were not used during the model building process, this should be a fairly good indicator for the general performance of the model and its out-of-sample error. 
